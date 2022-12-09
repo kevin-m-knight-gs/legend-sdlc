@@ -15,35 +15,27 @@
 package org.finos.legend.sdlc.server.gitlab.auth;
 
 import org.eclipse.collections.api.factory.Lists;
-import org.eclipse.collections.api.list.ListIterable;
-import org.eclipse.collections.api.list.MutableList;
+import org.eclipse.collections.api.list.ImmutableList;
 import org.finos.legend.sdlc.server.auth.Session;
 import org.finos.legend.sdlc.server.gitlab.GitLabAppInfo;
 
-import java.util.Arrays;
-
 public class GitLabAuthorizerManager
 {
-    private final ListIterable<? extends GitLabAuthorizer> gitLabAuthorizers;
+    private final ImmutableList<GitLabAuthorizer> gitLabAuthorizers;
 
-    private GitLabAuthorizerManager(Iterable<? extends GitLabAuthorizer> gitLabAuthorizers)
+    private GitLabAuthorizerManager(ImmutableList<GitLabAuthorizer> gitLabAuthorizers)
     {
-        MutableList<GitLabAuthorizer> authorizers = Lists.mutable.ofAll(gitLabAuthorizers);
-        if (authorizers.isEmpty())
-        {
-            authorizers.add(new KerberosGitLabAuthorizer());
-        }
-        this.gitLabAuthorizers = authorizers.toImmutable();
+        this.gitLabAuthorizers = gitLabAuthorizers.notEmpty() ? gitLabAuthorizers : Lists.immutable.with(new KerberosGitLabAuthorizer());
     }
 
     public static GitLabAuthorizerManager newManager(GitLabAuthorizer... gitLabAuthorizers)
     {
-        return newManager(Arrays.asList(gitLabAuthorizers));
+        return newManager(Lists.immutable.with(gitLabAuthorizers));
     }
 
     public static GitLabAuthorizerManager newManager(Iterable<? extends GitLabAuthorizer> gitLabAuthorizers)
     {
-        return new GitLabAuthorizerManager(gitLabAuthorizers);
+        return new GitLabAuthorizerManager(Lists.immutable.withAll(gitLabAuthorizers));
     }
 
     public GitLabToken authorize(Session session, GitLabAppInfo appInfo)

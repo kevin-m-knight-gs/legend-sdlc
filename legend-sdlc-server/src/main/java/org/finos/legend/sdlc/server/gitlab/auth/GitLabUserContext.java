@@ -22,12 +22,12 @@ import org.finos.legend.sdlc.server.guice.UserContext;
 import org.gitlab4j.api.GitLabApi;
 import org.gitlab4j.api.GitLabApi.ApiVersion;
 
+import java.net.URI;
+import java.util.Objects;
 import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.Response.Status;
-import java.net.URI;
-import java.util.Objects;
 
 @RequestScoped
 public class GitLabUserContext extends UserContext
@@ -69,7 +69,7 @@ public class GitLabUserContext extends UserContext
             {
                 try
                 {
-                    token = authorizerManager.authorize(session, this.appInfo);
+                    token = this.authorizerManager.authorize(this.session, this.appInfo);
                 }
                 catch (GitLabOAuthAuthenticator.UserInputRequiredException e)
                 {
@@ -114,7 +114,7 @@ public class GitLabUserContext extends UserContext
             {
                 try
                 {
-                    GitLabToken token = authorizerManager.authorize(session, this.appInfo);
+                    GitLabToken token = authorizerManager.authorize(this.session, this.appInfo);
                     if (token == null)
                     {
                         return false;

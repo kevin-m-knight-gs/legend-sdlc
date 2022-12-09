@@ -19,10 +19,10 @@ import org.apache.http.cookie.Cookie;
 import org.finos.legend.sdlc.server.gitlab.GitLabAppInfo;
 import org.finos.legend.sdlc.server.tools.AuthenticationTools;
 
-import javax.security.auth.Subject;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.PrivilegedAction;
+import javax.security.auth.Subject;
 
 public class KerberosGitLabSAMLAuthenticator extends GitLabSAMLAuthenticator
 {
@@ -61,7 +61,7 @@ public class KerberosGitLabSAMLAuthenticator extends GitLabSAMLAuthenticator
         }
         catch (URISyntaxException e)
         {
-            throw new RuntimeException("Error building SAML authentication URI: " + builder.toString(), e);
+            throw new RuntimeException("Error building SAML authentication URI: " + builder, e);
         }
     }
 

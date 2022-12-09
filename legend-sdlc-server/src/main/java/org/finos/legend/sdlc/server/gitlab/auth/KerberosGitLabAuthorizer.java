@@ -25,17 +25,14 @@ public class KerberosGitLabAuthorizer implements GitLabAuthorizer
     @Override
     public GitLabToken authorize(Session session, GitLabAppInfo appInfo)
     {
-        if (session instanceof KerberosSession)
-        {
-            KerberosSession kerberosSession = (KerberosSession) session;
-            KerberosGitLabSAMLAuthenticator kerberosGitLabSAMLAuthenticator = new KerberosGitLabSAMLAuthenticator(appInfo, kerberosSession.getSubject());
-            Cookie sessionCookie = kerberosGitLabSAMLAuthenticator.authenticateAndGetSessionCookie();
-            String oAuthToken = GitLabOAuthAuthenticator.newAuthenticator(appInfo).getOAuthTokenFromSessionCookie(sessionCookie);
-            return GitLabToken.newGitLabToken(Constants.TokenType.OAUTH2_ACCESS, oAuthToken);
-        }
-        else
+        if (!(session instanceof KerberosSession))
         {
             return null;
         }
+
+        KerberosGitLabSAMLAuthenticator kerberosGitLabSAMLAuthenticator = new KerberosGitLabSAMLAuthenticator(appInfo, ((KerberosSession) session).getSubject());
+        Cookie sessionCookie = kerberosGitLabSAMLAuthenticator.authenticateAndGetSessionCookie();
+        String oAuthToken = GitLabOAuthAuthenticator.newAuthenticator(appInfo).getOAuthTokenFromSessionCookie(sessionCookie);
+        return GitLabToken.newGitLabToken(Constants.TokenType.OAUTH2_ACCESS, oAuthToken);
     }
 }

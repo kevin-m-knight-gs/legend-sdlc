@@ -51,7 +51,6 @@ import org.jsoup.nodes.Element;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -61,6 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import javax.servlet.http.HttpServletRequest;
 
 public class GitLabOAuthAuthenticator
 {
@@ -84,6 +84,7 @@ public class GitLabOAuthAuthenticator
 
     private static final String AUTHORIZATION_CODE_GRANT_TYPE = "authorization_code";
     private static final String CODE_RESPONSE_TYPE = "code";
+    @Deprecated
     private static final String TOKEN_RESPONSE_TYPE = "token";
     private static final String BEARER_TOKEN_TYPE = "bearer";
 
@@ -311,6 +312,7 @@ public class GitLabOAuthAuthenticator
         return this.appInfo.getAppRedirectURI();
     }
 
+    @Deprecated
     private URI buildAuthURI(String state)
     {
         return buildAuthURI(this.appInfo, state, TOKEN_RESPONSE_TYPE);
@@ -441,7 +443,7 @@ public class GitLabOAuthAuthenticator
         }
         catch (URISyntaxException e)
         {
-            throw new RuntimeException("Error building OAuth URI: " + builder.toString(), e);
+            throw new RuntimeException("Error building OAuth URI: " + builder, e);
         }
     }
 
