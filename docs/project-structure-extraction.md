@@ -114,29 +114,23 @@ Create a new module containing the read-side of project structure:
 ## 4. Dependency Graph (Final State)
 
 ```
-legend-sdlc-tools              [NEW] (StringTools, IOTools, LegendSDLCServerException)
-       ▲
-       │
-legend-sdlc-model              (domain interfaces: Entity, ProjectConfiguration, etc.)
-       ▲
-       │
-legend-sdlc-project-files      (FileAccessContext, ProjectFile, SourceSpecification, etc.)
-       ▲
-       │
-legend-sdlc-project-structure  [NEW] (ProjectStructure read-side, version factories, maven)
-       ▲
-       │
-legend-sdlc-server             (UpdateBuilder, Dropwizard config, extensions, GitLab impl)
+         legend-sdlc-server
+                 |
+   legend-sdlc-project-structure  [NEW]
+                 |
+      legend-sdlc-project-files
+            /         \
+  legend-sdlc-model   legend-sdlc-shared  [NEW]
 ```
 
-### 3.4 Prerequisite: Create `legend-sdlc-tools` module
+### 3.4 Prerequisite: Create `legend-sdlc-shared` module
 
 `StringTools` (currently in `legend-sdlc-server-shared`) and `IOTools` (currently in
 `legend-sdlc-project-files`) are general-purpose utility classes with no external
 dependencies — they use only `java.util`, `java.io`, and `java.nio`. They are currently
-scattered across modules because there was no shared tools module below them.
+scattered across modules because there was no shared utilities module below them.
 
-Create a new `legend-sdlc-tools` module at the bottom of the dependency graph to hold
+Create a new `legend-sdlc-shared` module at the bottom of the dependency graph to hold
 these utilities. Both `legend-sdlc-project-files` and `legend-sdlc-server-shared` would
 depend on it instead of maintaining their own copies.
 
@@ -148,7 +142,7 @@ This can be replaced with a plain `int` status code:
 // Before (in legend-sdlc-server-shared, depends on javax.ws.rs)
 private final Status status;  // javax.ws.rs.core.Response.Status
 
-// After (in legend-sdlc-tools, no JAX-RS dependency)
+// After (in legend-sdlc-shared, no JAX-RS dependency)
 private final int statusCode;
 ```
 
@@ -159,12 +153,11 @@ free of any web framework dependency.
 The resulting dependency graph for the tools/utility layer:
 
 ```
-legend-sdlc-tools              [NEW] (StringTools, IOTools, LegendSDLCServerException)
-       ▲
-       │
-legend-sdlc-project-files      (FileAccessContext, ProjectFile, etc. — removes its own IOTools copy)
-       ▲
-legend-sdlc-server-shared      (removes its own StringTools, LegendSDLCServerException copies)
+   legend-sdlc-server-shared
+             |
+   legend-sdlc-project-files
+           /         \
+ legend-sdlc-model   legend-sdlc-shared  [NEW]
 ```
 
 ### 3.5 Breaking the remaining server dependencies
@@ -210,14 +203,14 @@ They can move to the new module.
 
 The extraction can be done incrementally to reduce risk:
 
-### Phase 1: Create `legend-sdlc-tools`
+### Phase 1: Create `legend-sdlc-shared`
 
-1. Create the `legend-sdlc-tools` module with no SDLC dependencies.
-2. Move `StringTools` from `legend-sdlc-server-shared` to `legend-sdlc-tools`.
-3. Move `IOTools` from `legend-sdlc-project-files` to `legend-sdlc-tools`.
+1. Create the `legend-sdlc-shared` module with no SDLC dependencies.
+2. Move `StringTools` from `legend-sdlc-server-shared` to `legend-sdlc-shared`.
+3. Move `IOTools` from `legend-sdlc-project-files` to `legend-sdlc-shared`.
 4. Refactor `LegendSDLCServerException` to use `int statusCode` instead of
-   `javax.ws.rs.core.Response.Status`. Move it to `legend-sdlc-tools`.
-5. Add `legend-sdlc-tools` as a dependency of `legend-sdlc-project-files` and
+   `javax.ws.rs.core.Response.Status`. Move it to `legend-sdlc-shared`.
+5. Add `legend-sdlc-shared` as a dependency of `legend-sdlc-project-files` and
    `legend-sdlc-server-shared`. Update imports in both modules.
 6. Build and verify all tests pass.
 
@@ -231,7 +224,7 @@ The extraction can be done incrementally to reduce risk:
 
 ### Phase 3: Create `legend-sdlc-project-structure`
 
-9. Create `legend-sdlc-project-structure` module with dependencies on `legend-sdlc-tools`,
+9. Create `legend-sdlc-project-structure` module with dependencies on `legend-sdlc-shared`,
     `legend-sdlc-model`, `legend-sdlc-project-files`, Eclipse Collections, Jackson,
     and `maven-model`.
 10. Move the read-side classes into the new module. Keep the same Java package
