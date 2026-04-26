@@ -162,7 +162,7 @@ The resulting dependency graph for the tools/utility layer:
 
 ### 3.5 Breaking the remaining server dependencies
 
-With `StringTools`, `IOTools`, and `LegendSDLCServerException` in `legend-sdlc-tools`,
+With `StringTools`, `IOTools`, and `LegendSDLCServerException` in `legend-sdlc-shared`,
 the project structure code's server dependencies reduce to:
 
 | Dependency | Resolution |
