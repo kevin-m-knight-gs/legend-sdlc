@@ -51,18 +51,16 @@ Subdirectories:
 | Import | Source Module | Why It's Needed |
 |---|---|---|
 | `LegendSDLCServerException` | `legend-sdlc-server-shared` | Thrown during validation and update operations |
-| `StringTools` | `legend-sdlc-server-shared` | Used for error message formatting |
-| `ProjectConfigurationUpdater` | `legend-sdlc-project-files` | Used by `UpdateBuilder` for config mutations |
 | `SourceSpecification`, `WorkspaceSpecification` | `legend-sdlc-project-files` | Used by methods that access workspace-qualified files |
 | `javax.ws.rs.core.Response.Status` | JAX-RS API | Used for HTTP status codes in `LegendSDLCServerException` |
 
 ### 2.3 The two concerns in `ProjectStructure`
 
-`ProjectStructure` conflates two distinct responsibilities:
+`ProjectStructure` combines two distinct responsibilities:
 
 1. **Read-side (layout knowledge)**: Given a `FileAccessContext`, determine where entity
    files are, parse `project.json` to get `ProjectConfiguration`, find entity source
-   directories, resolve dependency information. This is what external tools need.
+   directories, resolve dependency information.
 
 2. **Write-side (configuration updates)**: The `UpdateBuilder` inner class (lines 1020–1216)
    and `updateProjectConfiguration()` (lines 399–569) orchestrate multi-step configuration
@@ -111,19 +109,7 @@ Create a new module containing the read-side of project structure:
 - The `config/` subdirectory (Dropwizard configuration bindings)
 - The `extension/` subdirectory (server-managed extension providers)
 
-## 4. Dependency Graph (Final State)
-
-```
-         legend-sdlc-server
-                 |
-   legend-sdlc-project-structure  [NEW]
-                 |
-      legend-sdlc-project-files
-            /         \
-  legend-sdlc-model   legend-sdlc-shared  [NEW]
-```
-
-### 3.4 Prerequisite: Create `legend-sdlc-shared` module
+### 3.3 Prerequisite: Create `legend-sdlc-shared` module
 
 `StringTools` (currently in `legend-sdlc-server-shared`) and `IOTools` (currently in
 `legend-sdlc-project-files`) are general-purpose utility classes with no external
@@ -153,14 +139,12 @@ free of any web framework dependency.
 The resulting dependency graph for the tools/utility layer:
 
 ```
-   legend-sdlc-server-shared
-             |
-   legend-sdlc-project-files
-           /         \
- legend-sdlc-model   legend-sdlc-shared  [NEW]
+legend-sdlc-server-shared     legend-sdlc-project-files
+              \               /           \
+           legend-sdlc-shared [NEW]    legend-sdlc-model
 ```
 
-### 3.5 Breaking the remaining server dependencies
+### 3.4 Breaking the remaining server dependencies
 
 With `StringTools`, `IOTools`, and `LegendSDLCServerException` in `legend-sdlc-shared`,
 the project structure code's server dependencies reduce to:
@@ -168,17 +152,17 @@ the project structure code's server dependencies reduce to:
 | Dependency | Resolution |
 |---|---|
 | `SourceSpecification` | The static methods `getProjectStructure(projectId, sourceSpecification, ...)` and `getProjectConfiguration(projectId, sourceSpecification, ...)` are convenience wrappers that delegate to `FileAccessContext`. These are expected — `legend-sdlc-project-structure` depends on `legend-sdlc-project-files` (which defines `SourceSpecification`). No change needed. |
-| `ProjectConfigurationUpdater` | Only used by `UpdateBuilder`. Stays in the server module. |
+| `ProjectConfigurationUpdater` | Only used by `UpdateBuilder`. Stays in `legend-sdlc-server`. |
 | `WorkspaceSpecification` | Same as `SourceSpecification` — defined in `legend-sdlc-project-files`, no problem. |
 
-### 3.6 Handling `EntitySourceDirectory`
+### 3.5 Handling `EntitySourceDirectory`
 
 `EntitySourceDirectory` is currently an inner class of `ProjectStructure`. Its
 `serializeToBytes()` and `deserialize(ProjectFile)` methods throw `LegendSDLCServerException`.
-Since that exception will now live in `legend-sdlc-tools` (with the JAX-RS dependency
+Since that exception will now live in `legend-sdlc-shared` (with the JAX-RS dependency
 removed), these call sites can continue using `LegendSDLCServerException` unchanged.
 
-### 3.7 Maven structure dependencies
+### 3.6 Maven structure dependencies
 
 `MavenProjectStructure` and its subclasses depend on `org.apache.maven:maven-model` and
 `org.codehaus.plexus:plexus-utils`. These are lightweight libraries (no server infrastructure)
@@ -189,6 +173,28 @@ The Maven plugin helper classes (`LegendEntityPluginMavenHelper`,
 Engine/SDLC Maven plugin artifact coordinates. These are read-only data (they define
 which plugins go into generated POMs) and have no runtime dependency on the actual plugins.
 They can move to the new module.
+
+## 4. Dependency Graph (Final State)
+
+```
+               legend-sdlc-server
+               /                \
+legend-sdlc-server-shared    legend-sdlc-project-structure  [NEW]
+        |                    /         |              \
+legend-sdlc-shared [NEW]  legend-sdlc- legend-sdlc-    legend-sdlc-
+        |                 project-files entity-serial.  shared [NEW]
+legend-sdlc-model              \
+                           legend-sdlc-model
+```
+
+In plain terms:
+- `legend-sdlc-project-structure` depends on `legend-sdlc-project-files`,
+  `legend-sdlc-entity-serialization`, and `legend-sdlc-shared` (plus Eclipse Collections,
+  Jackson, `maven-model`, and `plexus-utils`).
+- `legend-sdlc-server` gains `legend-sdlc-project-structure` as a direct dependency and
+  retains `legend-sdlc-server-shared` for its own Dropwizard/JAX-RS concerns.
+- Neither `legend-sdlc-project-structure` nor `legend-sdlc-project-files` depends on
+  `legend-sdlc-server-shared`.
 
 ## 5. Risks and Mitigations
 
@@ -225,8 +231,8 @@ The extraction can be done incrementally to reduce risk:
 ### Phase 3: Create `legend-sdlc-project-structure`
 
 9. Create `legend-sdlc-project-structure` module with dependencies on `legend-sdlc-shared`,
-    `legend-sdlc-model`, `legend-sdlc-project-files`, Eclipse Collections, Jackson,
-    and `maven-model`.
+    `legend-sdlc-model`, `legend-sdlc-project-files`, `legend-sdlc-entity-serialization`,
+    Eclipse Collections, Jackson, `maven-model`, and `plexus-utils`.
 10. Move the read-side classes into the new module. Keep the same Java package
     (`org.finos.legend.sdlc.server.project`) to minimize source-level breakage.
 11. Add `legend-sdlc-project-structure` as a dependency of `legend-sdlc-server`.
