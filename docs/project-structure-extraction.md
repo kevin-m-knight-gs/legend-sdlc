@@ -111,18 +111,16 @@ Create a new module containing the read-side of project structure:
 
 ### 3.3 Prerequisite: Create `legend-sdlc-shared` module
 
-`StringTools` (currently in `legend-sdlc-server-shared`) and `IOTools` (currently in
-`legend-sdlc-project-files`) are general-purpose utility classes with no external
-dependencies — they use only `java.util`, `java.io`, and `java.nio`. They are currently
-scattered across modules because there was no shared utilities module below them.
+**Status: partially complete.** The `legend-sdlc-shared` module has been created, and
+`StringTools` (from `legend-sdlc-server-shared`) and `IOTools` (from
+`legend-sdlc-project-files`) have been moved there. Both `legend-sdlc-project-files` and
+`legend-sdlc-server-shared` now depend on `legend-sdlc-shared`.
 
-Create a new `legend-sdlc-shared` module at the bottom of the dependency graph to hold
-these utilities. Both `legend-sdlc-project-files` and `legend-sdlc-server-shared` would
-depend on it instead of maintaining their own copies.
-
-`LegendSDLCServerException` can also move to this module, **provided the JAX-RS dependency
-is removed**. Currently the exception stores a `javax.ws.rs.core.Response.Status` field.
-This can be replaced with a plain `int` status code:
+The remaining item is `LegendSDLCServerException`, which is still in
+`legend-sdlc-server-shared`. It can also move to `legend-sdlc-shared`, **provided the
+JAX-RS dependency is removed**. Currently the exception stores a
+`javax.ws.rs.core.Response.Status` field. This can be replaced with a plain `int` status
+code:
 
 ```java
 // Before (in legend-sdlc-server-shared, depends on javax.ws.rs)
@@ -136,13 +134,11 @@ Server-side code that needs the JAX-RS `Status` enum can convert with
 `Status.fromStatusCode(exception.getStatusCode())`. The exception class itself becomes
 free of any web framework dependency.
 
-The resulting dependency graph for the tools/utility layer:
+The resulting dependencies for the tools/utility layer:
 
-```
-legend-sdlc-server-shared     legend-sdlc-project-files
-              \               /           \
-           legend-sdlc-shared [NEW]    legend-sdlc-model
-```
+- `legend-sdlc-shared` — no SDLC dependencies (bottom of the graph).
+- `legend-sdlc-project-files` — depends on `legend-sdlc-shared` and `legend-sdlc-model`.
+- `legend-sdlc-server-shared` — depends on `legend-sdlc-shared`.
 
 ### 3.4 Breaking the remaining server dependencies
 
@@ -176,24 +172,20 @@ They can move to the new module.
 
 ## 4. Dependency Graph (Final State)
 
-```
-               legend-sdlc-server
-               /                \
-legend-sdlc-server-shared    legend-sdlc-project-structure  [NEW]
-        |                    /         |              \
-legend-sdlc-shared [NEW]  legend-sdlc- legend-sdlc-    legend-sdlc-
-        |                 project-files entity-serial.  shared [NEW]
-legend-sdlc-model              \
-                           legend-sdlc-model
-```
+SDLC module dependencies after all phases are complete (SDLC dependencies only; external
+libraries such as Eclipse Collections, Jackson, `maven-model`, GitLab4J, Dropwizard, etc.
+are omitted):
 
-In plain terms:
-- `legend-sdlc-project-structure` depends on `legend-sdlc-project-files`,
-  `legend-sdlc-entity-serialization`, and `legend-sdlc-shared` (plus Eclipse Collections,
-  Jackson, `maven-model`, and `plexus-utils`).
-- `legend-sdlc-server` gains `legend-sdlc-project-structure` as a direct dependency and
-  retains `legend-sdlc-server-shared` for its own Dropwizard/JAX-RS concerns.
-- Neither `legend-sdlc-project-structure` nor `legend-sdlc-project-files` depends on
+- `legend-sdlc-shared` — no SDLC dependencies (bottom of the graph).
+- `legend-sdlc-model` — no SDLC dependencies.
+- `legend-sdlc-entity-serialization` — depends on `legend-sdlc-model`.
+- `legend-sdlc-project-files` — depends on `legend-sdlc-shared` and `legend-sdlc-model`.
+- `legend-sdlc-server-shared` — depends on `legend-sdlc-shared`.
+- `legend-sdlc-project-structure` *(new)* — depends on `legend-sdlc-project-files`,
+  `legend-sdlc-entity-serialization`, and `legend-sdlc-shared`.
+- `legend-sdlc-server` — depends on `legend-sdlc-project-structure` and
+  `legend-sdlc-server-shared`.
+- `legend-sdlc-server-fs` — depends on `legend-sdlc-project-structure` and
   `legend-sdlc-server-shared`.
 
 ## 5. Risks and Mitigations
@@ -211,14 +203,14 @@ The extraction can be done incrementally to reduce risk:
 
 ### Phase 1: Create `legend-sdlc-shared`
 
-1. Create the `legend-sdlc-shared` module with no SDLC dependencies.
-2. Move `StringTools` from `legend-sdlc-server-shared` to `legend-sdlc-shared`.
-3. Move `IOTools` from `legend-sdlc-project-files` to `legend-sdlc-shared`.
+1. ✅ Create the `legend-sdlc-shared` module with no SDLC dependencies.
+2. ✅ Move `StringTools` from `legend-sdlc-server-shared` to `legend-sdlc-shared`.
+3. ✅ Move `IOTools` from `legend-sdlc-project-files` to `legend-sdlc-shared`.
 4. Refactor `LegendSDLCServerException` to use `int statusCode` instead of
    `javax.ws.rs.core.Response.Status`. Move it to `legend-sdlc-shared`.
-5. Add `legend-sdlc-shared` as a dependency of `legend-sdlc-project-files` and
+5. ✅ Add `legend-sdlc-shared` as a dependency of `legend-sdlc-project-files` and
    `legend-sdlc-server-shared`. Update imports in both modules.
-6. Build and verify all tests pass.
+6. ✅ Build and verify all tests pass.
 
 ### Phase 2: Prepare the `ProjectStructure` split
 
