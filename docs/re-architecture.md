@@ -13,11 +13,23 @@ This plan re-architects `legend-sdlc` so that:
    every backend.
 3. **As much functionality as possible is usable outside the server.** In particular:
    entity editing operations on a model in a local checkout, including a Legend model
-   embedded in a larger project that also contains non-Legend content.
+   embedded in a larger project that also contains non-Legend content. The headline
+   consumer of this goal is **Legend IDE plugins** (IntelliJ, an LSP server): model
+   editing — and, for a managed project, project-structure/configuration editing — driven
+   from an IDE rather than from Studio, with the IDE owning version control and reviews.
+   See §4, which now treats the IDE forms as first-class requirements.
 
 This plan subsumes [`project-structure-extraction.md`](project-structure-extraction.md):
 that document's phases remain valid and become the early phases here (its Phase 1 is
 already partially complete). Where this document and that one conflict, this one governs.
+
+A companion feature plan,
+[`project-structure-configuration-options.md`](project-structure-configuration-options.md),
+covers version- and extension-scoped project configuration options (e.g. making the shaded
+service-execution jar optional, or a GitLab extension's runner options). It is kept
+*separate* — it changes the `project.json` layout and the REST surface, both non-goals here
+— but it is *dependent* on this plan and sequenced onto it; this plan reserves three small
+seams for it (noted in §6 and §7).
 
 ### Non-goals
 
@@ -78,7 +90,8 @@ What exists today, and what it tells us:
 
       LOCAL TOOLING (parallel consumer of L0–L3, no L4–L6):
       legend-sdlc-local — entity editing on a local checkout,
-      model-in-a-larger-project support, CLI-able
+      model-in-a-larger-project support, CLI-able,
+      embeddable in IDE plugins (IntelliJ, LSP)
 ```
 
 Rules:
@@ -275,10 +288,13 @@ public interface BackendFactory
 - The single `legend-sdlc-server` distribution can bundle any set of backend jars;
   deployment chooses by configuration. One main class, no per-backend server modules.
 
-## 4. Local / Embedded Usage (`legend-sdlc-local`)
+## 4. Local, Embedded, and IDE Usage (`legend-sdlc-local`)
 
 The second headline goal: use SDLC functionality on a local working copy, with no
-server, including when the Legend model is part of a larger non-Legend project.
+server, including when the Legend model is part of a larger non-Legend project. The
+sharpest consumer of this is a **Legend IDE plugin** (IntelliJ, or an LSP server), which
+§4.4–4.5 promote to first-class requirements — they constrain the design of L0–L3 and this
+module, not just `legend-sdlc-local` in isolation.
 
 ### 4.1 What it is
 
@@ -325,6 +341,57 @@ of scope; the point is the layers do not preclude it.)
 - The EMIT project extractor need (per the extraction doc's motivation) is satisfied
   by L2 alone; `legend-sdlc-local` is the fuller answer for tooling that also edits.
 
+### 4.4 IDE plugins: the two forms
+
+An IDE plugin uses this module in one of two forms, which map onto the existing
+`ProjectType` enum (`MANAGED`, `EMBEDDED`) — so the layers already distinguish them:
+
+- **Form 1 — a fully managed project, edited via the IDE instead of Studio**
+  (`ProjectType.MANAGED`). The plugin needs **entity editing *and* project-structure /
+  configuration editing** (add/remove dependencies, change structure version, set
+  version-scoped options — see the companion config-options plan). The IDE owns version
+  control and reviews, so the plugin needs **no L4 backend**: it edits the working copy
+  through L1's local file context and L3's entity/configuration logic, and the IDE commits
+  the result with its own Git.
+- **Form 2 — a Legend model embedded in a larger non-Legend project**
+  (`ProjectType.EMBEDDED`, typically at a subpath). The plugin needs **entity editing
+  only**; the host owns everything else. This is §4.2's rooted-context scenario.
+
+Both forms consume L0–L3 + `legend-sdlc-local`; neither touches L4–L6. This is the same
+"another product's JVM, no container" rule from §3.1 — an IntelliJ/LSP process *is* that
+JVM.
+
+### 4.5 What IDE embedding adds to the design
+
+A long-lived IDE host is a stricter environment than a one-shot CLI, and these constraints
+must be honored *down the stack*, not bolted onto `legend-sdlc-local`:
+
+- **No process-global mutable state below L4.** Strengthen §3.1's "usable from a plain
+  `main`" into "safe to instantiate many times concurrently in a shared JVM." Static
+  caches, singletons, and `ServiceLoader` results captured in statics are out for L0–L3 and
+  this module. (The backend `ServiceLoader` stays an L6 concern.)
+- **A real lifecycle, because the plugin is not the sole writer.** The user edits files
+  directly and the IDE's Git mutates the working tree underneath. `LocalModel` therefore
+  needs `open(root) → handle → close` plus an explicit **invalidate/refresh** (or
+  file-watch integration): caches must be invalidatable so the in-memory view reconciles
+  with on-disk reality rather than diverging. State the threading contract for a handle
+  (e.g. "not thread-safe; callers serialize") — IDEs call from many threads.
+- **A two-tier surface matching the two forms.** Expose a minimal *entities-only* editing
+  capability (Form 2) that does not drag in structure-update machinery, and a
+  *structure-aware* capability (Form 1) layered on top. This mirrors the L2/L3 split:
+  entity read/write vs. project-structure update are already distinct.
+- **Diagnostics as data, not exceptions.** LSP/IntelliJ want structured, ideally positioned
+  validation results (malformed entity, unresolved dependency, invalid config-option
+  value). The structure/configuration layer should offer validation that *returns* results;
+  deep semantic compilation stays an Engine concern, but the SDLC/Engine boundary should be
+  clean — SDLC validates *layout and configuration*, Engine validates *model semantics*.
+- **A stable, lean, published API.** Just as the backend SPI (L4) is a contract for backend
+  authors, this becomes the contract for IDE-plugin authors: a small, documented,
+  semver-stable surface (the API is the deliverable, per §4.1), with a deliberately lean,
+  shade-friendly dependency footprint — the layering already bars Dropwizard/Guice/JAX-RS
+  below L6; be equally deliberate about Jackson/Eclipse-Collections so the plugin does not
+  fight its host's classpath.
+
 ## 5. Compatibility Strategy
 
 - **REST API**: unchanged routes, payloads, and semantics for GitLab deployments.
@@ -361,6 +428,9 @@ Split `ProjectStructure` read/write; create `legend-sdlc-project-structure` (L2)
 Amendment per §3.3: the write-side `ProjectStructureUpdater` is extracted as a
 standalone class with no server imports, so it can move to L3 in Phase 3 (it may sit
 in the server temporarily; it must not *bind* to it).
+*Reserved seam S2 (config-options plan):* land `getConfigurationProperties()` (default
+empty) on the L2 version-factory abstraction and on `ProjectStructureExtension` so versions
+and extensions can declare typed options later without an SPI break.
 
 **Phase 3 — SDLC core (L3).**
 Create `legend-sdlc-core`. Factor the duplicated entity access/modification logic out
@@ -370,6 +440,11 @@ and FS api classes delegate to core (they shrink but do not move yet). This phas
 the highest regression risk and the highest payoff; it is pure refactoring with the
 existing test suites as the net, and it is where the TCK should begin to grow
 (initially run against GitLab-mocked and FS backends in-repo).
+*Reserved seam S1 (config-options plan):* while the L0 config model and the updater are
+open here, introduce the namespaced `getStructureConfiguration()` /
+`getExtensionConfiguration()` bags (the two existing flat booleans can live there behind
+their now-deprecated getters) and do **not** add further top-level config booleans — this
+avoids re-migrating `project.json` later.
 
 **Phase 4 — Backend SPI (L4).**
 Move `domain/api/**` to `legend-sdlc-backend-api`; introduce `Backend`,
@@ -377,6 +452,11 @@ Move `domain/api/**` to `legend-sdlc-backend-api`; introduce `Backend`,
 `AbstractBackend` defaults wired to L3. Server resources switch to consuming
 `Backend`. Server config gains the polymorphic `backend:` section with a
 GitLab-only registration; `BaseLegendSDLCServer`'s GitLab hard-wiring is removed.
+*Reserved seam S3 (config-options plan):* design the capability/discovery surface so a
+"describe what this structure/extension supports" call can also carry option schemas,
+rather than bolting on a separate options endpoint afterward. Settle the extension↔backend
+boundary here (who provides the `ProjectStructureExtensionProvider`), since that decides
+where an extension's option schema lives.
 
 **Phase 5 — Backend extraction (L5).**
 Move `server/gitlab/**` to `legend-sdlc-backend-gitlab` (GitLab4J leaves the server's
@@ -385,11 +465,15 @@ defaults + capabilities; delete its parallel server. Add
 `legend-sdlc-backend-inmemory` and make the TCK (`legend-sdlc-backend-test-suite`) a
 published artifact run by all three backends in CI.
 
-**Phase 6 — Local tooling.**
+**Phase 6 — Local / IDE tooling.**
 `LocalProjectFileAccessProvider` (rooted contexts, discovery), `LocalModel` editing
-façade in `legend-sdlc-local`. Validate the embedded scenario end-to-end: a test
-repository containing non-Legend content plus two models; open, edit entities, update
-configuration, verify files.
+façade in `legend-sdlc-local`, with the §4.5 IDE constraints baked in: `open/close` +
+invalidate/refresh lifecycle, a stated threading contract, the two-tier (entities-only vs.
+structure-aware) surface, and validation that returns results. Validate the embedded
+scenario end-to-end: a test repository containing non-Legend content plus two models; open,
+edit entities, update configuration, verify files; then mutate files on disk underneath an
+open handle and confirm refresh reconciles. The published API surface is itself a
+deliverable (it is the IDE-plugin contract).
 
 Sequencing notes: Phases 1–3 do not change module boundaries seen by deployments and
 can proceed immediately. Phase 4 is the API-shape commitment and deserves a design
@@ -408,6 +492,8 @@ before code. Phases 5 and 6 are independent of each other once 4 lands.
 | **Two plans diverging** (this doc vs `project-structure-extraction.md`). | The extraction doc stays as the detailed treatment of Phases 1–2, with a banner pointing here; its two superseded decisions (keeping `server.*` packages; leaving the updater in the server) are noted in §3.3/§5. |
 | **Scope creep toward monorepo-projects in backends.** | Explicitly deferred (§4.2): the architecture allows it; no backend implements it in this plan. |
 | **Guice request-scoping is load-bearing in subtle ways** (e.g. `UserContext`, lazy GitLab clients). | Phase 4 keeps Guice at L6 but moves the *contract* into the SPI; integration tests on the GitLab backend with real auth flows before/after. |
+| **IDE embedding exposes hidden global state / lifecycle gaps.** A long-lived host with concurrent instances and external file mutation will surface any static cache or non-invalidatable state in L0–L3 (§4.5). | Make "no process-global mutable state below L4" an enforced rule (audit static fields during Phases 3 and 6); design `LocalModel` with explicit invalidate/refresh and a stated threading contract; test the "files change under an open handle" case in Phase 6. |
+| **Config-options plan and this plan drift** (separate docs, overlapping classes). | The config-options plan is *dependent*, sequenced after Phase 4, and this plan reserves seams S1–S3 (§6) so it lands additively. Keep the extension↔backend boundary decision (Phase 4) as the shared contract between the two. |
 
 ## 8. End-state Dependency Graph (SDLC modules only)
 
