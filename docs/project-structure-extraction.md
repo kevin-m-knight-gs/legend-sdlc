@@ -1,5 +1,13 @@
 # Extracting Project Structure from `legend-sdlc-server`
 
+> **Note:** This document is now part of the larger re-architecture plan in
+> [`re-architecture.md`](re-architecture.md), where it serves as the detailed treatment
+> of Phases 1–2. Two decisions below are superseded by that plan (see its §3.3 and §5):
+> the extracted modules use new non-`server` Java packages (with a deprecation bridge)
+> rather than keeping `org.finos.legend.sdlc.server.project`, and the write-side
+> `ProjectStructureUpdater` ultimately moves to `legend-sdlc-core` rather than staying
+> in `legend-sdlc-server`.
+
 ## 1. Motivation
 
 The `ProjectStructure` class and its related types currently live in `legend-sdlc-server`.
