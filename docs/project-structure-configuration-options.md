@@ -221,8 +221,9 @@ mechanism the re-architecture builds for capabilities** rather than a one-off en
 e.g. extend the structure/capabilities describe call so that, given a structure version
 (and optionally an extension version), it returns the `ConfigurationProperty` list. For IDE
 plugins (the re-architecture's `legend-sdlc-local` consumer) the same schema is available
-**in-process** off the L2 factory and the extension — no server required, which is exactly
-why the schema must live in L2/L4, not in a server resource.
+**in-process** off the L2 factory (structure options, always) and off the deployment's
+extension provider when one is supplied (extension options) — no server required, which is
+exactly why the schema must live in L2, not in a server resource.
 
 ### 4.6 Consumption
 
@@ -259,6 +260,12 @@ structure version(s)**, stored in `structureConfiguration`. To stay compatible:
 
 ## 5. Extensions belong to the deployment, not the backend
 
+Founding design intent: **the project *structure* is universal and portable** — the same
+structure is meant to work on GitHub, GitLab, or any other platform — **while project
+structure *extensions* exist to absorb the particulars of a deployment's environment** and
+are expected to differ from one environment to the next. Configuration options inherit this
+split: structure-version options are portable; extension options are environment-specific.
+
 The pivotal distinction for extension-scoped options:
 
 - A **backend** (e.g. the GitLab backend) is **generic** — one implementation usable against
@@ -274,7 +281,10 @@ user-sandbox projects — is **two SDLC Server deployments**, both running the *
 `gitlab` backend, each configured with its **own** project structure extensions. The sandbox
 deployment must not push artifacts to the production Maven repository, so its pipeline
 definition differs. The differing piece is the *extensions*, not the backend. Extensions are
-a function of the deployment, **orthogonal to backend type**.
+a function of the deployment, **orthogonal to backend type** — orthogonal *by design*, but
+correlated *in practice*: both follow from the environment, so a GitLab backend is normally
+paired with GitLab-oriented extensions. The pairing is conventional, not enforced; an unusual
+deployment could mix them.
 
 So the layering for extensions:
 
@@ -282,25 +292,28 @@ So the layering for extensions:
 |---|---|---|
 | Extension *contract* — `ProjectStructureExtension` / `…Provider` interfaces, `collectUpdate…Operations`, and the new `getConfigurationProperties()` | **L2** (project-structure) | Pure structure manipulation over `ProjectConfiguration` + file operations; no backend or server deps, so `legend-sdlc-local` and the TCK can exercise it directly. |
 | *Applying* extensions during config update | **L3** (core) | Calls whatever provider it is handed; knows no concrete extension. |
-| *Binding* the concrete provider/extensions for a deployment | **L6 / deployment config** | As today (`ProjectStructureConfiguration` Dropwizard config); a deployment-supplied jar on the server classpath. **Not** the backend. |
+| *Binding* the concrete provider/extensions for a deployment | **deployment config** | A *server* binds them via `ProjectStructureConfiguration` (as today); local/IDE tooling maintaining a *managed* project must be supplied the same deployment provider. **Not** the backend. |
 
 This is essentially how it already works — extensions are *already* deployment-configured via
 `ProjectStructureConfiguration`. The re-architecture forces only one change, and a necessary
 one: because it moves the configuration *updater* down to L3, and the updater *applies*
 extensions, the `ProjectStructureExtension` **interface must fall to L2** (it lives in the
-server today only because the updater does). The concrete providers stay deployment server
-config. The re-architecture must take care **not to bundle a deployment's extensions into the
-generic backend jar** as it extracts L5.
+server today only because the updater does). The concrete providers stay deployment
+configuration. The re-architecture must take care **not to bundle a deployment's extensions
+into the generic backend jar** as it extracts L5.
 
 Consequences for option discovery:
 
 - **Structure-version options** are declared by the version itself (L2) → available
-  *everywhere*, including `legend-sdlc-local` / IDE plugins with no server.
-- **Extension options** are declared by deployment-provided extensions → meaningful *only on
-  a server deployment that supplies them*. An IDE editing a managed project locally has no
-  deployment, so it sees no extension options and should leave extension-generated files (CI
-  config, `settings.xml`) untouched; the deployment's extension reconciles them when the
-  change returns through the server.
+  *everywhere*, including `legend-sdlc-local` / IDE plugins with no server. They are part of
+  the portable structure, so they travel with the project regardless of environment.
+- **Extension options** are declared by a deployment's extensions → available *wherever that
+  deployment's extension provider is loaded*: on the server (from
+  `ProjectStructureConfiguration`) **and** in local/IDE tooling maintaining a *managed*
+  project, which must be handed the deployment's provider — a managed project belongs to its
+  deployment whether reached through the server or edited locally. Only **embedded** projects
+  escape this: `ProjectType.EMBEDDED` forbids extensions, so Form 2 of the IDE story (§4.4 of
+  the re-architecture) involves no extension options at all.
 
 This is why §2 sequences this work after the structure/core/SPI phases: the extension option
 schema is declared on an interface whose home (L2) and application point (L3) the

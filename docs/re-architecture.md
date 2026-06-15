@@ -160,17 +160,27 @@ the remaining concept-level APIs (reviews, versions, patches, workflows, builds)
   `ProjectFileOperation`s against a `FileModificationContext` and are needed by local
   tooling too (e.g. adding a dependency to a local checkout). The extraction doc placed
   it in the server only because L3 did not exist in its world view.
-- A second, forced addition: the `ProjectStructureExtension` /
-  `ProjectStructureExtensionProvider` **interfaces** move down to L2 as well. Today they sit
-  in the server only because the updater does; once the updater (which *applies* extensions)
-  is at L3, the interfaces must be at L2 so L3 can call them and so `legend-sdlc-local` /
-  the TCK can exercise them. **Concrete** extensions and their provider stay
-  **deployment-scoped server configuration** (L6) — a project structure extension is
-  tailored to one deployment's environment (e.g. a `.gitlab-ci.yml` with runner tags valid
-  only on that GitLab instance, or a `settings.xml` for that environment's Maven repos), and
-  is *not* part of the generic backend. Two GitLab instances (prod vs. sandbox) are two
-  deployments running the same `gitlab` backend with different extensions. The L5 extraction
-  must keep extensions out of the backend jar. See
+- A second, forced addition follows from a founding design principle: **the project
+  *structure* is universal and portable — the same structure works on GitHub, GitLab, or any
+  other platform — while project structure *extensions* exist to handle the particulars of a
+  deployment's environment** and are expected to differ per environment (e.g. a
+  `.gitlab-ci.yml` with runner tags valid only on one GitLab instance, or a `settings.xml`
+  for that environment's Maven repos). So the `ProjectStructureExtension` /
+  `ProjectStructureExtensionProvider` **interfaces** travel down to L2 with the rest of the
+  portable structure: they sit in the server today only because the updater does, and once
+  the updater (which *applies* extensions) is at L3, the interfaces must be at L2 so L3 can
+  call them and `legend-sdlc-local` / the TCK can exercise them.
+- **Concrete** extensions and their provider are **deployment-scoped configuration**, *not*
+  part of the generic backend. A *server* deployment binds them via
+  `ProjectStructureConfiguration` (as today); local/IDE tooling that maintains a *managed*
+  project must likewise be supplied that deployment's provider, because a managed project
+  belongs to its deployment whether it is reached through the server or edited locally (only
+  *embedded* projects have no extensions). The L5 extraction must keep extensions out of the
+  backend jar. Backend choice and extensions are **decoupled by design but correlated in
+  practice** — both follow from the deployment environment, so a GitLab backend is normally
+  paired with GitLab-oriented extensions; the pairing is conventional, not enforced. Two
+  GitLab instances (prod vs. sandbox) are two deployments running the same `gitlab` backend
+  with different extensions. See
   [`project-structure-configuration-options.md`](project-structure-configuration-options.md)
   §5.
 
@@ -365,10 +375,16 @@ An IDE plugin uses this module in one of two forms, which map onto the existing
   version-scoped options — see the companion config-options plan). The IDE owns version
   control and reviews, so the plugin needs **no L4 backend**: it edits the working copy
   through L1's local file context and L3's entity/configuration logic, and the IDE commits
-  the result with its own Git.
+  the result with its own Git. It does, however, still belong to a *deployment*: structure /
+  configuration edits that touch extension-managed files (CI config, `settings.xml`) need
+  that deployment's `ProjectStructureExtensionProvider` supplied to `legend-sdlc-local`. That
+  provider is the one piece of "environment" the IDE must be told about — it is not an L4
+  backend, just the deployment's extension binding (§3.3).
 - **Form 2 — a Legend model embedded in a larger non-Legend project**
   (`ProjectType.EMBEDDED`, typically at a subpath). The plugin needs **entity editing
-  only**; the host owns everything else. This is §4.2's rooted-context scenario.
+  only**; the host owns everything else. This is §4.2's rooted-context scenario. Embedded
+  projects have no project structure extensions by definition, so this form involves no
+  environment-specific scaffolding at all.
 
 Both forms consume L0–L3 + `legend-sdlc-local`; neither touches L4–L6. This is the same
 "another product's JVM, no container" rule from §3.1 — an IntelliJ/LSP process *is* that
@@ -404,6 +420,41 @@ must be honored *down the stack*, not bolted onto `legend-sdlc-local`:
   shade-friendly dependency footprint — the layering already bars Dropwizard/Guice/JAX-RS
   below L6; be equally deliberate about Jackson/Eclipse-Collections so the plugin does not
   fight its host's classpath.
+
+### 4.6 Open question: handling a managed project in a local/IDE setting
+
+Form 1 needs to be thought through before Phase 6, because a managed project **belongs to a
+deployment** even when edited locally: structure / configuration edits that touch
+extension-managed files (CI config, `settings.xml`, …) — and the surfacing of
+extension-scoped options — require that deployment's `ProjectStructureExtensionProvider`
+(§3.3). Entity editing needs none of this; structure-aware editing does. Three sub-questions,
+none of which should be answered by accident:
+
+- **How does the tooling acquire the provider?**
+  - *(a) Bundled* with the plugin — simplest, works offline, but couples plugin releases to
+    deployment changes and forces redistribution whenever an extension changes.
+  - *(b) Fetched from the SDLC server the project belongs to* — the server already holds it
+    via `ProjectStructureConfiguration`, so the **Phase-4 capability/discovery surface** can
+    serve the extension schema and behavior. Always current; no offline story.
+  - *(c) User/workspace-configured* — most flexible, most setup burden, most room for
+    misconfiguration.
+- **Which deployment does this checkout belong to?** `project.json` records the
+  structure+extension *version*, not deployment identity. The tooling needs a way to resolve
+  "this checkout → that deployment's provider" (the Git remote is a hint, but hosting ≠
+  deployment config — see the "correlated in practice" caveat in §3.3).
+- **What is the offline / provider-absent degraded mode?** A safe default: always permit
+  entity editing; for structure/config edits with no provider available, either block the
+  operations that would touch extension-managed files or perform them and **leave
+  extension-managed files untouched**, letting the deployment's extension reconcile when the
+  change returns through the server. Pick one explicitly.
+
+A workable default is **(b) with a bundled/cached fallback**: fetch from the owning server
+when reachable, cache it, and degrade to entity-only editing when neither a cached provider
+nor a server is available. But this is a contract to decide on the record — settled in the
+Phase 4 SPI/discovery review (which owns the server side) and confirmed in Phase 6 (which
+builds the local consumer). The corollary for `legend-sdlc-local`'s API: structure-aware
+operations must take a `ProjectStructureExtensionProvider` as an explicit input, and the
+module must behave well when it is absent.
 
 ## 5. Compatibility Strategy
 
@@ -468,8 +519,9 @@ GitLab-only registration; `BaseLegendSDLCServer`'s GitLab hard-wiring is removed
 *Reserved seam S3 (config-options plan):* design the capability/discovery surface so a
 "describe what this structure/extension supports" call can also carry option schemas,
 rather than bolting on a separate options endpoint afterward. As L5 is extracted, keep
-project structure extensions as **deployment-scoped server configuration** (the deployment
-supplies the `ProjectStructureExtensionProvider`) — they are *not* backend-owned (§3.3); the
+project structure extensions as **deployment-scoped configuration** (the deployment supplies
+the `ProjectStructureExtensionProvider` — to the server via `ProjectStructureConfiguration`,
+or to local/IDE tooling for a managed project) — they are *not* backend-owned (§3.3); the
 generic backend jar must not bundle a deployment's extensions.
 
 **Phase 5 — Backend extraction (L5).**
@@ -507,7 +559,8 @@ before code. Phases 5 and 6 are independent of each other once 4 lands.
 | **Scope creep toward monorepo-projects in backends.** | Explicitly deferred (§4.2): the architecture allows it; no backend implements it in this plan. |
 | **Guice request-scoping is load-bearing in subtle ways** (e.g. `UserContext`, lazy GitLab clients). | Phase 4 keeps Guice at L6 but moves the *contract* into the SPI; integration tests on the GitLab backend with real auth flows before/after. |
 | **IDE embedding exposes hidden global state / lifecycle gaps.** A long-lived host with concurrent instances and external file mutation will surface any static cache or non-invalidatable state in L0–L3 (§4.5). | Make "no process-global mutable state below L4" an enforced rule (audit static fields during Phases 3 and 6); design `LocalModel` with explicit invalidate/refresh and a stated threading contract; test the "files change under an open handle" case in Phase 6. |
-| **Config-options plan and this plan drift** (separate docs, overlapping classes). | The config-options plan is *dependent*, sequenced after Phase 4, and this plan reserves seams S1–S3 (§6) so it lands additively. Shared contract: extensions are deployment-scoped server config (interface in L2, concrete providers bound per deployment), *not* bundled into the generic backend (§3.3). |
+| **Managed projects edited locally need their deployment's extensions.** How local/IDE tooling acquires the right `ProjectStructureExtensionProvider`, identifies which deployment a checkout belongs to, and behaves offline is unsettled. | Open question — see §4.6. Leaning: fetch from the owning server (reuse the Phase-4 discovery surface) with a cached/bundled fallback and an entity-only degraded mode. Decide in the Phase 4 review; confirm in Phase 6. |
+| **Config-options plan and this plan drift** (separate docs, overlapping classes). | The config-options plan is *dependent*, sequenced after Phase 4, and this plan reserves seams S1–S3 (§6) so it lands additively. Shared contract: extensions are deployment-scoped config (interface in L2; concrete providers bound per deployment — to the server, or to local tooling for a managed project), *not* bundled into the generic backend (§3.3). |
 
 ## 8. End-state Dependency Graph (SDLC modules only)
 
