@@ -91,11 +91,12 @@ Why not orthogonal:
    (L0), `ProjectStructure` + version factories + `ProjectStructureExtension` (→ L2),
    `ProjectConfigurationUpdater` (→ L3), and the REST command (L6). Doing it *before* those
    move means doing it twice; doing it *after* means designing against the final boundaries.
-2. **Extension options entangle the backend boundary.** In the re-architecture, deployment
-   ≈ backend (L5), and structure *extensions* are the deployment hook. A GitLab extension's
-   runner options are conceptually owned by the GitLab backend. This work needs that
-   extension↔backend boundary settled first (§5), or it will be designed against a seam
-   that is about to move.
+2. **Extension options depend on the extension SPI's new home.** The re-architecture moves
+   the configuration *updater* to L3, which forces the `ProjectStructureExtension` interface
+   down to L2 (L3 applies extensions) while concrete extensions remain deployment-scoped
+   server config — *not* backend-owned (§5). Extension-scoped options are declared on that
+   interface, so they must be designed against its settled L2 shape, not the server-side
+   shape it has today.
 3. **It is the same shape of problem as the capability model.** The re-architecture already
    introduces "declare what is supported, expose it for discovery, enforce it." Option
    schemas are "declare what is configurable, expose it for discovery, validate against it."
@@ -197,7 +198,7 @@ per option; the four-place edit (§1) collapses to "declare the property on the 
 | Option lives on | Declared by | Stored under | Read by |
 |---|---|---|---|
 | A structure version | the version's factory (L2) | `structureConfiguration` | the version factory at build/update |
-| A deployment's extension | the `ProjectStructureExtension` (L4/L5, see §5) | `extensionConfiguration` | the extension's `collectUpdate…Operations` |
+| A deployment's extension | the `ProjectStructureExtension` (L2 interface; bound per deployment, see §5) | `extensionConfiguration` | the extension's `collectUpdate…Operations` |
 
 ### 4.4 Validation
 
@@ -256,27 +257,54 @@ structure version(s)**, stored in `structureConfiguration`. To stay compatible:
 - The REST `UpdateProjectConfigurationCommand` keeps accepting the old fields (deprecated)
   and also accepts a generic `structureConfiguration` map; both feed the updater.
 
-## 5. The extension ↔ backend relationship
+## 5. Extensions belong to the deployment, not the backend
 
-Extension-scoped options are where this plan and the re-architecture must agree, so resolve
-it explicitly as part of the re-architecture's Phase 4/5 rather than here:
+The pivotal distinction for extension-scoped options:
 
-- Today `ProjectStructureExtension` and its provider live server-side
-  (`server/project/extension`) and are wired from Dropwizard config
-  (`ProjectStructureConfiguration`).
-- In the re-architecture, deployment-specific behavior is the **backend's** province (L5),
-  and the server selects a backend by configuration. A GitLab deployment's extension — and
-  thus its runner options — is naturally **provided by the GitLab backend**.
-- Recommended boundary: the *option schema* and the *file-operation contribution* of an
-  extension stay in the structure/extension layer (so `legend-sdlc-local` and the TCK can
-  exercise them without a backend), while the *binding of which extensions a deployment
-  offers* is part of backend/server configuration. Concretely: `ProjectStructureExtension`
-  (schema + `collectUpdate…Operations`) is L2/L4 SPI; a backend (or server config) supplies
-  the `ProjectStructureExtensionProvider`. This keeps extension options testable in
-  isolation while letting a deployment own which ones exist and what their values may be.
+- A **backend** (e.g. the GitLab backend) is **generic** — one implementation usable against
+  *any* GitLab instance. It knows how to talk to GitLab; it knows nothing about a particular
+  environment.
+- **Project structure extensions** are tailored to a **particular deployment and its
+  environment**. Examples: a `.gitlab-ci.yml` whose `tags` select runners that exist only on
+  that GitLab instance; a `settings.xml` pointing at Maven repositories reachable only in
+  that environment. Different instances → different extensions.
 
-This is exactly why §2 sequences this work *after* the backend SPI lands: the home of an
-extension's option schema depends on where the extension/backend boundary is drawn.
+Concretely, an environment with two GitLab instances — one for production projects, one for
+user-sandbox projects — is **two SDLC Server deployments**, both running the *same generic*
+`gitlab` backend, each configured with its **own** project structure extensions. The sandbox
+deployment must not push artifacts to the production Maven repository, so its pipeline
+definition differs. The differing piece is the *extensions*, not the backend. Extensions are
+a function of the deployment, **orthogonal to backend type**.
+
+So the layering for extensions:
+
+| Concern | Where | Notes |
+|---|---|---|
+| Extension *contract* — `ProjectStructureExtension` / `…Provider` interfaces, `collectUpdate…Operations`, and the new `getConfigurationProperties()` | **L2** (project-structure) | Pure structure manipulation over `ProjectConfiguration` + file operations; no backend or server deps, so `legend-sdlc-local` and the TCK can exercise it directly. |
+| *Applying* extensions during config update | **L3** (core) | Calls whatever provider it is handed; knows no concrete extension. |
+| *Binding* the concrete provider/extensions for a deployment | **L6 / deployment config** | As today (`ProjectStructureConfiguration` Dropwizard config); a deployment-supplied jar on the server classpath. **Not** the backend. |
+
+This is essentially how it already works — extensions are *already* deployment-configured via
+`ProjectStructureConfiguration`. The re-architecture forces only one change, and a necessary
+one: because it moves the configuration *updater* down to L3, and the updater *applies*
+extensions, the `ProjectStructureExtension` **interface must fall to L2** (it lives in the
+server today only because the updater does). The concrete providers stay deployment server
+config. The re-architecture must take care **not to bundle a deployment's extensions into the
+generic backend jar** as it extracts L5.
+
+Consequences for option discovery:
+
+- **Structure-version options** are declared by the version itself (L2) → available
+  *everywhere*, including `legend-sdlc-local` / IDE plugins with no server.
+- **Extension options** are declared by deployment-provided extensions → meaningful *only on
+  a server deployment that supplies them*. An IDE editing a managed project locally has no
+  deployment, so it sees no extension options and should leave extension-generated files (CI
+  config, `settings.xml`) untouched; the deployment's extension reconciles them when the
+  change returns through the server.
+
+This is why §2 sequences this work after the structure/core/SPI phases: the extension option
+schema is declared on an interface whose home (L2) and application point (L3) the
+re-architecture is establishing.
 
 ## 6. Compatibility
 
@@ -334,6 +362,6 @@ not a second migration of `project.json`:
 |---|---|
 | **Typed values in an opaque `Map<String,Object>`** lose compile-time safety for option authors. | Acceptable: the `ConfigurationProperty` schema + validation enforce types at the edges; typed accessors (`booleanOption(...)`) keep call sites clean. Mirrors how generation properties already work. |
 | **Option lifetime across version upgrades.** When a project moves structure version, options that no longer apply must be dropped; carried-over ones validated against the new schema. | Slot into the existing config-update re-serialization (the same flow that moves/re-serializes entities on version change). Define policy: drop unknown options on upgrade, warn on dropped non-default values. |
-| **Extension options vs. backend configuration overlap.** A GitLab runner option could be argued as either project config or deployment config. | Distinguish *per-project, persisted in `project.json`* (this plan) from *deployment-wide server/backend config* (the re-architecture's `backend:` section). Runner *tags for a project's pipeline* are the former; runner *infrastructure* is the latter. Document the test: does it belong in version control with the project? |
+| **Where a runner-style option actually belongs.** "GitLab runner tags" could be a per-project value, an extension's fixed output, or backend connection config. | Three distinct layers: the per-project *selection* among deployment-offered choices → `project.json` (this plan); the *menu of choices and the `.gitlab-ci.yml` template* → the deployment's extension (server config, §5); the GitLab *connection* → the backend's `backend:` config. Test for the per-project layer: does this value belong in version control with the project? |
 | **Two discovery endpoints** if §8/S3 is missed. | Land S3 during the re-architecture's Phase 4; otherwise this plan adds a parallel endpoint and the client integrates twice. |
 | **Studio form rendering** is out of this repo. | Schema is designed to be client-agnostic (name/type/default/required/allowed-values is enough to render a generic form); coordinate the wire shape with Studio before Phase 3. |

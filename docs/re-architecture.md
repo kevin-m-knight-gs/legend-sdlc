@@ -26,7 +26,7 @@ already partially complete). Where this document and that one conflict, this one
 A companion feature plan,
 [`project-structure-configuration-options.md`](project-structure-configuration-options.md),
 covers version- and extension-scoped project configuration options (e.g. making the shaded
-service-execution jar optional, or a GitLab extension's runner options). It is kept
+service-execution jar optional, or a deployment's GitLab-CI runner-tag options). It is kept
 *separate* — it changes the `project.json` layout and the REST surface, both non-goals here
 — but it is *dependent* on this plan and sequenced onto it; this plan reserves three small
 seams for it (noted in §6 and §7).
@@ -160,6 +160,19 @@ the remaining concept-level APIs (reviews, versions, patches, workflows, builds)
   `ProjectFileOperation`s against a `FileModificationContext` and are needed by local
   tooling too (e.g. adding a dependency to a local checkout). The extraction doc placed
   it in the server only because L3 did not exist in its world view.
+- A second, forced addition: the `ProjectStructureExtension` /
+  `ProjectStructureExtensionProvider` **interfaces** move down to L2 as well. Today they sit
+  in the server only because the updater does; once the updater (which *applies* extensions)
+  is at L3, the interfaces must be at L2 so L3 can call them and so `legend-sdlc-local` /
+  the TCK can exercise them. **Concrete** extensions and their provider stay
+  **deployment-scoped server configuration** (L6) — a project structure extension is
+  tailored to one deployment's environment (e.g. a `.gitlab-ci.yml` with runner tags valid
+  only on that GitLab instance, or a `settings.xml` for that environment's Maven repos), and
+  is *not* part of the generic backend. Two GitLab instances (prod vs. sandbox) are two
+  deployments running the same `gitlab` backend with different extensions. The L5 extraction
+  must keep extensions out of the backend jar. See
+  [`project-structure-configuration-options.md`](project-structure-configuration-options.md)
+  §5.
 
 **`legend-sdlc-core` (L3) — new; the de-duplication target:**
 
@@ -454,9 +467,10 @@ Move `domain/api/**` to `legend-sdlc-backend-api`; introduce `Backend`,
 GitLab-only registration; `BaseLegendSDLCServer`'s GitLab hard-wiring is removed.
 *Reserved seam S3 (config-options plan):* design the capability/discovery surface so a
 "describe what this structure/extension supports" call can also carry option schemas,
-rather than bolting on a separate options endpoint afterward. Settle the extension↔backend
-boundary here (who provides the `ProjectStructureExtensionProvider`), since that decides
-where an extension's option schema lives.
+rather than bolting on a separate options endpoint afterward. As L5 is extracted, keep
+project structure extensions as **deployment-scoped server configuration** (the deployment
+supplies the `ProjectStructureExtensionProvider`) — they are *not* backend-owned (§3.3); the
+generic backend jar must not bundle a deployment's extensions.
 
 **Phase 5 — Backend extraction (L5).**
 Move `server/gitlab/**` to `legend-sdlc-backend-gitlab` (GitLab4J leaves the server's
@@ -493,7 +507,7 @@ before code. Phases 5 and 6 are independent of each other once 4 lands.
 | **Scope creep toward monorepo-projects in backends.** | Explicitly deferred (§4.2): the architecture allows it; no backend implements it in this plan. |
 | **Guice request-scoping is load-bearing in subtle ways** (e.g. `UserContext`, lazy GitLab clients). | Phase 4 keeps Guice at L6 but moves the *contract* into the SPI; integration tests on the GitLab backend with real auth flows before/after. |
 | **IDE embedding exposes hidden global state / lifecycle gaps.** A long-lived host with concurrent instances and external file mutation will surface any static cache or non-invalidatable state in L0–L3 (§4.5). | Make "no process-global mutable state below L4" an enforced rule (audit static fields during Phases 3 and 6); design `LocalModel` with explicit invalidate/refresh and a stated threading contract; test the "files change under an open handle" case in Phase 6. |
-| **Config-options plan and this plan drift** (separate docs, overlapping classes). | The config-options plan is *dependent*, sequenced after Phase 4, and this plan reserves seams S1–S3 (§6) so it lands additively. Keep the extension↔backend boundary decision (Phase 4) as the shared contract between the two. |
+| **Config-options plan and this plan drift** (separate docs, overlapping classes). | The config-options plan is *dependent*, sequenced after Phase 4, and this plan reserves seams S1–S3 (§6) so it lands additively. Shared contract: extensions are deployment-scoped server config (interface in L2, concrete providers bound per deployment), *not* bundled into the generic backend (§3.3). |
 
 ## 8. End-state Dependency Graph (SDLC modules only)
 
