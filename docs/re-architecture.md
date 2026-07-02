@@ -26,7 +26,8 @@ already partially complete). Where this document and that one conflict, this one
 A companion feature plan,
 [`project-structure-configuration-options.md`](project-structure-configuration-options.md),
 covers version- and extension-scoped project configuration options (e.g. making the shaded
-service-execution jar optional, or a deployment's GitLab-CI runner-tag options). It is kept
+service-execution jar optional, letting a project add user-maintained modules or omit
+optional generated modules, or a deployment's GitLab-CI runner-tag options). It is kept
 *separate* — it changes the `project.json` layout and the REST surface, both non-goals here
 — but it is *dependent* on this plan and sequenced onto it; this plan reserves three small
 seams for it (noted in §6 and §7).

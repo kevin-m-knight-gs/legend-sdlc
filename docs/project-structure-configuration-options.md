@@ -34,6 +34,29 @@ ServiceJar` exists in the model and updater but the V13 factory still adds the s
 unconditionally, so the flag does nothing yet. It is a top-level field that should have been
 a property of one structure version from the start.
 
+Two further use cases sharpen the requirement — both about **module composition** in the
+multi-module Maven structures, and both currently impossible:
+
+1. **User-maintained additional modules.** Some users want a *managed* project plus one
+   extra module they maintain themselves (custom Java code, tooling, ...) in the same
+   repository and build. Today that cannot survive: every configuration update regenerates
+   the root `pom.xml` from the structure's fixed module set
+   (`MultiModuleMavenProjectStructure.configureMavenProjectModel`), silently dropping the
+   user's `<module>` entry. There is nowhere in `project.json` to record "this project also
+   contains module X — keep it in the build, but leave its contents alone."
+
+2. **Skipping generated modules.** The mirror image: every managed project gets *every*
+   module its structure version defines, used or not — V13 generates `versioned-entities`,
+   `service-execution`, and `file-generation` alongside `entities`. A project that defines
+   no services still carries a service-execution module and pays its build/CI cost. The
+   `entities` module *is* the project and can never be dropped, but every other module is
+   at least potentially optional per project.
+
+Both are per-project, version-scoped configuration of exactly the same kind as
+`produceShadedServiceJar` — they parameterize how one structure version lays the project
+out — but they are **list-valued**, which is precisely why the answer must be a typed,
+schema-validated mechanism (§4.8) and not another round of flat top-level booleans.
+
 The same need exists one level out, for **extensions**. Project structure extensions
 (`ProjectStructureExtension`, keyed by `(structureVersion, extensionVersion)`) are the
 deployment-specific hook — e.g. a GitLab deployment's extension that injects CI files. A
@@ -57,7 +80,9 @@ SDLC core stay ignorant of any specific option.
   hard breaks.
 - A general user-defined settings system. Options are declared by **code** (the version
   factory or the extension), not by end users; this is typed metadata, not a free-form map
-  that anything can write to.
+  that anything can write to. (User-supplied *values* are fine — the module lists of §4.8
+  are user data — so long as the option itself, its type, and its validation are declared
+  by the owning version.)
 - Per-entity or per-module configuration. The unit remains the project (`project.json`).
 
 ## 2. Relationship to the Re-architecture — and the decision
@@ -119,6 +144,16 @@ honor the reserved seams in §8.
   (server `project`; → L2) — build POMs/structure from a `ProjectConfiguration`; this is
   where option values are *consumed* (e.g. V13's `configureServiceExecutionModule` adds the
   shade plugin).
+- **`MultiModuleMavenProjectStructure`** (server `project/maven`; → L2) — base class of the
+  multi-module structures. Holds a **fixed** module set per version: the entities module
+  plus an immutable `otherModules` map (V13: `versioned-entities`, `service-execution`,
+  `file-generation`). `configureMavenProjectModel` regenerates the root POM's `<modules>`
+  and dependency management from exactly that set on every update — which is what drops any
+  user-added `<module>` entry (§1) — and `collectUpdateProjectConfigurationOperations`
+  deletes the files of any module present in the old structure but absent from the new one.
+  (`project.json` already carries one per-project module-shaping list, `artifactGenerations`,
+  whose module hook in the base class is deprecated — precedent that per-project module
+  composition belongs in the configuration, but no supported mechanism today.)
 - **`ProjectStructureExtension`** / `ProjectStructureExtensionProvider`
   (server `project/extension`) — extensions keyed by `(structureVersion, extensionVersion)`;
   contribute file operations via `collectUpdateProjectConfigurationOperations(oldConfig,
@@ -148,7 +183,8 @@ public interface ConfigurationProperty
 ```
 
 (Reuse `GenerationItemType`/`GenerationPropertyItem` if the type lattice already fits;
-otherwise a small parallel enum keeps the two subsystems decoupled.)
+otherwise a small parallel enum keeps the two subsystems decoupled. The `LIST` kind is not
+speculative: the module-composition options of §4.8 are list-valued from day one.)
 
 A **structure version** declares its options. Add to the L2 factory abstraction:
 
@@ -182,7 +218,11 @@ default Map<String, Object> getExtensionConfiguration() { return Collections.emp
 {
   "projectStructureVersion": { "version": 13, "extensionVersion": 2 },
   "groupId": "...", "artifactId": "...",
-  "structureConfiguration": { "produceShadedServiceJar": false },
+  "structureConfiguration": {
+    "produceShadedServiceJar": false,
+    "excludedModules": ["file-generation"],
+    "additionalModules": ["my-tooling"]
+  },
   "extensionConfiguration": { "gitlabRunnerTags": ["legend", "docker"] }
 }
 ```
@@ -207,7 +247,14 @@ declared `ConfigurationProperty` list:
 
 - unknown key → reject;
 - missing required key with no default → reject;
-- value not assignable to the declared type / not in `allowedValues` → reject.
+- value not assignable to the declared type / not in `allowedValues` → reject (for
+  list-valued options, element-wise).
+
+The generic checks cover what the schema can express. The owning version/extension can
+additionally contribute **option-specific validation** for constraints it cannot — value
+grammar (module-name syntax), collisions with structural names, and cross-option
+consistency (an option that targets an excluded module, §4.8) — run in the same validate
+step.
 
 Validation lives where the schema lives (L2 for structure options; with the extension for
 extension options) and is invoked from the L3 updater's validate step — the same place that
@@ -257,6 +304,60 @@ structure version(s)**, stored in `structureConfiguration`. To stay compatible:
   one-time, behavior-preserving migration.
 - The REST `UpdateProjectConfigurationCommand` keeps accepting the old fields (deprecated)
   and also accepts a generic `structureConfiguration` map; both feed the updater.
+
+### 4.8 Module composition options
+
+The two module use cases from §1 become the first **list-valued** structure-version
+options. They are declared by the multi-module structure versions and implemented once in
+the multi-module base: each version factory keeps declaring only its full module map, and
+the base applies the options centrally when computing the modules to build.
+
+| Option | Type | Default | Meaning |
+|---|---|---|---|
+| `additionalModules` | `LIST<STRING>` | `[]` | Module names the **user** maintains; included in the build, never generated or deleted by the structure |
+| `excludedModules` | `LIST<STRING>` | `[]` | Names of the version's generated modules to omit; `allowedValues` = the version's optional module names |
+
+The **effective module set** of a structure instance becomes
+`(declared modules − excludedModules) + entities + additionalModules`, and it flows through
+every place the fixed set flows today: root-POM `<modules>` and dependency management
+(`configureMavenProjectModel`), module POM generation and stale-module deletion
+(`collectUpdateProjectConfigurationOperations`), and the artifact-id streams
+(`getAllArtifactIds` / `getArtifactIdsForType`).
+
+**`additionalModules` semantics.** The structure adds each named module to the root POM's
+`<modules>` — so configuration updates stop dropping it — and does nothing else: it never
+writes, regenerates, or deletes anything under the module's directory. The user owns the
+module's `pom.xml` and contents. Removing a name from the list removes the `<module>` entry
+but **orphans** the directory rather than deleting it — the deliberate inverse of managed
+modules, whose files the structure owns and removes. Additional modules carry no
+`ArtifactType`, so they never appear in `getArtifactIdsForType` (they are not Legend
+artifacts); whether they participate in `getAllArtifactIds` / dependency management is an
+open question (§9).
+
+**`excludedModules` semantics.** An excluded module is simply absent from the effective
+set: no module POM generated, no `<module>` or dependency-management entry, no artifact
+ids. Excluding a previously present module rides the existing stale-module deletion path
+(its generated files are removed, exactly as when a version upgrade drops a module);
+re-including it regenerates them — safe, because managed modules are fully generated. The
+**entities module is not excludable**: it is not offered in `allowedValues`, and
+structurally it *is* the project.
+
+**Validation** (the owner-supplied checks of §4.4, beyond generic type/allowed-values):
+
+- `additionalModules`: each name matches the existing module-name grammar
+  (`\w+(-\w+)*`, the `VALID_MODULE_NAME` rule); no collision with the entities module, the
+  version's generated module names, or another entry.
+- `excludedModules`: element-wise `allowedValues` check against the version's optional
+  module names; unknown names rejected.
+- **Cross-option consistency**: an option that targets an excluded module is invalid —
+  e.g. setting `produceShadedServiceJar` while excluding `service-execution` is rejected,
+  because the flag configures a module the project no longer has.
+
+Both options pass the §9 litmus test for per-project values — they belong in version
+control with the project, are portable across deployments (structure-scoped, not
+extension-scoped), and matter equally for local/IDE editing of a managed project: the L2
+placement of schema + validation is what lets `legend-sdlc-local` enforce them with no
+server.
 
 ## 5. Extensions belong to the deployment, not the backend
 
@@ -354,7 +455,19 @@ tests + new round-trip/migration tests are the net.
 schemas; teach the REST command to accept the generic maps. Studio renders options from the
 schema. `legend-sdlc-local` exposes the schema in-process for IDE plugins.
 
-**Phase 4 — extension options.** With the extension↔backend boundary settled (§5), let an
+**Phase 4 — module composition options (§4.8).** Declare `additionalModules` and
+`excludedModules` on the multi-module structure version(s), implemented once in the
+multi-module base: effective-module-set computation, root-POM preservation of user modules,
+exclusion-aware update/deletion, and the owner-supplied validation (name grammar,
+collisions, allowed values, cross-option consistency). End-to-end tests: a configuration
+update preserves a user module's `<module>` entry and never touches its files; removing it
+from the list orphans (does not delete) the directory; excluding then re-including
+`service-execution` round-trips; `produceShadedServiceJar` with `service-execution`
+excluded is rejected. (Needs Phase 1's persistence and Phase 3's REST map to be settable;
+sequenced after discovery so Studio can render the module options rather than users
+hand-editing JSON.)
+
+**Phase 5 — extension options.** With the extension↔backend boundary settled (§5), let an
 extension declare and consume options; prove with one concrete extension option end-to-end
 (e.g. a sample GitLab runner-tags option behind the GitLab backend).
 
@@ -374,7 +487,10 @@ not a second migration of `project.json`:
 | Risk / question | Notes / mitigation |
 |---|---|
 | **Typed values in an opaque `Map<String,Object>`** lose compile-time safety for option authors. | Acceptable: the `ConfigurationProperty` schema + validation enforce types at the edges; typed accessors (`booleanOption(...)`) keep call sites clean. Mirrors how generation properties already work. |
-| **Option lifetime across version upgrades.** When a project moves structure version, options that no longer apply must be dropped; carried-over ones validated against the new schema. | Slot into the existing config-update re-serialization (the same flow that moves/re-serializes entities on version change). Define policy: drop unknown options on upgrade, warn on dropped non-default values. |
+| **Option lifetime across version upgrades.** When a project moves structure version, options that no longer apply must be dropped; carried-over ones validated against the new schema. | Slot into the existing config-update re-serialization (the same flow that moves/re-serializes entities on version change). Define policy: drop unknown options on upgrade, warn on dropped non-default values. Module options mostly carry: module names are stable across current versions; where a target version lacks a name, validation flags it at upgrade time. |
+| **The update path must never delete a user-maintained module** (§4.8). The existing stale-module deletion assumes every module is structure-owned; `additionalModules` breaks that assumption. | Make "not structure-owned ⇒ not deletable" a structural rule in the multi-module base, not a filter bolted onto the deletion path; test the orphan-on-removal behavior explicitly. Conversely, *excluding* a managed module deletes its directory per existing semantics — any user files placed inside a managed module's directory are lost; document this and warn on exclusion. |
+| **Excluding a module changes the project's artifact set.** `getAllArtifactIds()` / `getArtifactIdsForType()` feed artifact publication and downstream dependency resolution; excluding e.g. `versioned-entities` may break downstream projects that consume those artifacts. | Per-version judgment on which modules are offered in `allowedValues` (a version may keep a module mandatory for ecosystem reasons, not just `entities`); surface a warning when excluding a module whose artifacts are consumable downstream. |
+| **Missing `pom.xml` for an additional module** breaks the build until the user supplies it (the structure deliberately never writes into the module). | Open question: scaffold a minimal module POM once, on first addition, if and only if the directory is absent — never touch it again — vs. validate-and-warn only. Leaning: scaffold-once; decide in Phase 4. Related open question: whether additional modules join `getAllArtifactIds()`/dependency management or stay entirely outside the artifact machinery. |
 | **Where a runner-style option actually belongs.** "GitLab runner tags" could be a per-project value, an extension's fixed output, or backend connection config. | Three distinct layers: the per-project *selection* among deployment-offered choices → `project.json` (this plan); the *menu of choices and the `.gitlab-ci.yml` template* → the deployment's extension (server config, §5); the GitLab *connection* → the backend's `backend:` config. Test for the per-project layer: does this value belong in version control with the project? |
 | **Two discovery endpoints** if §8/S3 is missed. | Land S3 during the re-architecture's Phase 4; otherwise this plan adds a parallel endpoint and the client integrates twice. |
 | **Studio form rendering** is out of this repo. | Schema is designed to be client-agnostic (name/type/default/required/allowed-values is enough to render a generic form); coordinate the wire shape with Studio before Phase 3. |
