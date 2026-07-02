@@ -359,6 +359,16 @@ extension-scoped), and matter equally for local/IDE editing of a managed project
 placement of schema + validation is what lets `legend-sdlc-local` enforce them with no
 server.
 
+A third companion plan,
+[`project-layout-reconciliation.md`](project-layout-reconciliation.md), extends this
+pattern from modules to individual files: under its build-and-reconcile model, files not
+produced by the structure/extensions are deleted on update, so reconciling structure
+versions declare a sibling **`additionalFiles`** option (a `LIST<STRING>` of preserved
+path patterns) through this plan's mechanism. The interplay is deliberate: each
+`additionalModules` entry implicitly preserves its module directory, and `excludedModules`
+stops needing the hand-written stale-module deletion path — an excluded module is simply
+absent from the desired layout.
+
 ## 5. Extensions belong to the deployment, not the backend
 
 Founding design intent: **the project *structure* is universal and portable** — the same

@@ -32,6 +32,17 @@ optional generated modules, or a deployment's GitLab-CI runner-tag options). It 
 — but it is *dependent* on this plan and sequenced onto it; this plan reserves three small
 seams for it (noted in §6 and §7).
 
+A second companion plan,
+[`project-layout-reconciliation.md`](project-layout-reconciliation.md), replaces the
+imperative write-side of structures and extensions (hand-computed `ProjectFileOperation`
+deltas) with a declarative model: build the complete desired layout from configuration +
+entities, and let one generic reconciler diff it against current files. It too is kept
+separate — it deliberately *changes update behavior* (files outside the managed layout are
+deleted unless preserved), which breaks this plan's behavior-preserving premise — and it
+too is dependent and sequenced onto this plan, which reserves seams R1–R2 for it (noted in
+§6): most importantly, Phases 2–3 must extract the imperative write-side as the *legacy*
+contract behind a single dispatch point, not enshrine it as the new public L2 SPI.
+
 ### Non-goals
 
 - Changing the REST API surface consumed by Legend Studio. The server's resources and
@@ -160,7 +171,12 @@ the remaining concept-level APIs (reviews, versions, patches, workflows, builds)
   (`legend-sdlc-core`), because configuration updates are expressed entirely as
   `ProjectFileOperation`s against a `FileModificationContext` and are needed by local
   tooling too (e.g. adding a dependency to a local checkout). The extraction doc placed
-  it in the server only because L3 did not exist in its world view.
+  it in the server only because L3 did not exist in its world view. Note the
+  layout-reconciliation companion plan intends to *replace* the imperative write-side
+  contract (`collectUpdateProjectConfigurationOperations` on structures and extensions)
+  with a declarative build-and-reconcile model — so the extraction should route all
+  structure/extension write logic through a single dispatch point and treat the imperative
+  contract as legacy scaffolding, not new public SPI (seam R1, §6).
 - A second, forced addition follows from a founding design principle: **the project
   *structure* is universal and portable — the same structure works on GitHub, GitLab, or any
   other platform — while project structure *extensions* exist to handle the particulars of a
@@ -496,6 +512,10 @@ in the server temporarily; it must not *bind* to it).
 *Reserved seam S2 (config-options plan):* land `getConfigurationProperties()` (default
 empty) on the L2 version-factory abstraction and on `ProjectStructureExtension` so versions
 and extensions can declare typed options later without an SPI break.
+*Reserved seam R1, part 1 (layout-reconciliation plan):* extract the write-side so the
+updater reaches structure/extension write logic through a **single dispatch point**, and
+keep `collectUpdateProjectConfigurationOperations` framed as the legacy contract — do not
+design new public SPI surface around it.
 
 **Phase 3 — SDLC core (L3).**
 Create `legend-sdlc-core`. Factor the duplicated entity access/modification logic out
@@ -510,6 +530,12 @@ open here, introduce the namespaced `getStructureConfiguration()` /
 `getExtensionConfiguration()` bags (the two existing flat booleans can live there behind
 their now-deprecated getters) and do **not** add further top-level config booleans — this
 avoids re-migrating `project.json` later.
+*Reserved seams R1 (part 2) and R2 (layout-reconciliation plan):* as the updater lands in
+L3, preserve the single write-side dispatch point so a declarative build-and-reconcile
+path can sit beside the imperative one without touching callers; and as the TCK begins to
+grow, design it to express the layout invariants (update ≡ create; reconciling an
+already-correct project is a no-op) so reconciling structure versions are certified by the
+same suite.
 
 **Phase 4 — Backend SPI (L4).**
 Move `domain/api/**` to `legend-sdlc-backend-api`; introduce `Backend`,
@@ -561,7 +587,7 @@ before code. Phases 5 and 6 are independent of each other once 4 lands.
 | **Guice request-scoping is load-bearing in subtle ways** (e.g. `UserContext`, lazy GitLab clients). | Phase 4 keeps Guice at L6 but moves the *contract* into the SPI; integration tests on the GitLab backend with real auth flows before/after. |
 | **IDE embedding exposes hidden global state / lifecycle gaps.** A long-lived host with concurrent instances and external file mutation will surface any static cache or non-invalidatable state in L0–L3 (§4.5). | Make "no process-global mutable state below L4" an enforced rule (audit static fields during Phases 3 and 6); design `LocalModel` with explicit invalidate/refresh and a stated threading contract; test the "files change under an open handle" case in Phase 6. |
 | **Managed projects edited locally need their deployment's extensions.** How local/IDE tooling acquires the right `ProjectStructureExtensionProvider`, identifies which deployment a checkout belongs to, and behaves offline is unsettled. | Open question — see §4.6. Leaning: fetch from the owning server (reuse the Phase-4 discovery surface) with a cached/bundled fallback and an entity-only degraded mode. Decide in the Phase 4 review; confirm in Phase 6. |
-| **Config-options plan and this plan drift** (separate docs, overlapping classes). | The config-options plan is *dependent*, sequenced after Phase 4, and this plan reserves seams S1–S3 (§6) so it lands additively. Shared contract: extensions are deployment-scoped config (interface in L2; concrete providers bound per deployment — to the server, or to local tooling for a managed project), *not* bundled into the generic backend (§3.3). |
+| **Companion plans and this plan drift** (separate docs, overlapping classes: config-options; layout-reconciliation). | Both companions are *dependent* and sequenced onto this plan, which reserves seams S1–S3 and R1–R2 (§6) so they land additively. Shared contracts: extensions are deployment-scoped config (interface in L2; concrete providers bound per deployment — to the server, or to local tooling for a managed project), *not* bundled into the generic backend (§3.3); and the imperative write-side extracted in Phases 2–3 is the *legacy* contract behind one dispatch point, which the layout-reconciliation plan replaces. |
 
 ## 8. End-state Dependency Graph (SDLC modules only)
 
